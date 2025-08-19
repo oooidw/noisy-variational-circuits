@@ -76,6 +76,7 @@ def crx_gates(N, theta=np.pi/20):
 
 
 def generate_ghz(N):
+    """Generate a GHZ state for N qubits."""
     state = th.zeros(2**N, dtype=th.complex128)
     state[0] = 1/np.sqrt(2)
     state[-1] = 1/np.sqrt(2)
@@ -83,6 +84,7 @@ def generate_ghz(N):
 
 
 def generate_H(N):
+    """Generate the Hamiltonian for the system."""
     h = 9/N
     scale = 2**(N/2)
 
@@ -104,24 +106,40 @@ def generate_ghz_dm(N):
     return th.outer(ghz_state, ghz_state)
 
 
-def noisy_gate(n, L, gamma=0.01):
-    sigma_z = th.tensor([[1, 0], [0, -1]], dtype=th.complex128)
-    sigma_z_loc = []
+def noisy_gate_adj(N, L, jumpOPs, gamma=0.01):
+    phi = th.normal(0, np.log(N)/(N * L), (N,1,1))
 
-    for i in range(n):
-        sigma_z_loc.append(th.kron(th.eye(2**i, dtype=th.complex128), th.kron(sigma_z, th.eye(2**(n-i-1), dtype=th.complex128)))) # Id x Z_i x Id
+    gates = th.matrix_exp(-1j * phi * jumpOPs)
 
-    phi = np.random.normal(0, np.log(n)/(n * L), n)
+    res = th.eye(2**N, dtype=th.complex128)
+    for i in range(N):
 
-    gate = th.matrix_exp(-1j * phi[0] * sigma_z_loc[0])
-    for i in range(1,n):
-        tmp = th.matrix_exp(-1j * phi[i] * sigma_z_loc[i])
-        gate = gate @ tmp
+        res = res @ gates[i]
 
-    return gate
+    return res
 
 
-def layer(state, angles, N, L, gates):
+def noisy_gate_nadj(N, L, jumpOPs, gamma=0.01):
+    phi = th.normal(0, np.log(N)/(N * L), (N,1,1))
+
+    gates = th.matrix_exp(-1j * phi * jumpOPs + phi**2 * (jumpOPs @ jumpOPs - jumpOPs.transpose(2,1).conj() @ jumpOPs)/2)
+
+    res = th.eye(2**N, dtype=th.complex128)
+    for i in range(N):
+
+        res = res @ gates[i]
+
+    return res
+
+
+def noisy_gate(N, L, jumpOPs, adj, gamma=0.01):
+    if adj==True:
+        return noisy_gate_adj(N, L, jumpOPs, gamma)
+    else:
+        return noisy_gate_nadj(N, L, jumpOPs, gamma)
+
+
+def layer(state, angles, N, L, gates, jumpOPs, adj):
     """Apply a layer of gates to the state vector."""
     U = global_rotation(angles,N)
     
@@ -133,13 +151,13 @@ def layer(state, angles, N, L, gates):
         state = gate @ state
 
     # Apply noisy gate
-    noise = noisy_gate(N, L)
+    noise = noisy_gate(N, L, jumpOPs, adj)
     state = noise @ state
 
     return state
 
 
-def calc_variance(N, L, n_sim=100, n_sim_noise=100, fast_ent=True):
+def calc_variance(N, L, n_sim=100, n_sim_noise=100, fast_ent=True, noise='dephasing'):
 
     H = generate_H(N)
 
@@ -147,6 +165,21 @@ def calc_variance(N, L, n_sim=100, n_sim_noise=100, fast_ent=True):
         ent_gates = cnot_gates(N)
     else:
         ent_gates = crx_gates(N)
+
+    if noise == 'dephasing':
+        jumpOP = th.tensor([[1, 0], [0, -1]], dtype=th.complex128) # sigma_z
+        adj = True
+    elif noise == 'bitflip':
+        jumpOP = th.tensor([[0, 1], [1, 0]], dtype=th.complex128) # sigma_x
+        adj = True
+    elif noise == 'amplitude_damping':
+        jumpOP = th.tensor([[0, 1], [0, 0]], dtype=th.complex128) # sigma_-
+        adj = False
+
+    jumpOPs = th.empty(N, 2**N, 2**N, dtype=th.complex128)
+    for i in range(N):
+        jumpOPs[i] = th.kron(th.eye(2**i, dtype=th.complex128), th.kron(jumpOP, th.eye(2**(N-i-1), dtype=th.complex128))) # Id x jumpOP x Id
+
 
     obs = []
 
@@ -163,7 +196,7 @@ def calc_variance(N, L, n_sim=100, n_sim_noise=100, fast_ent=True):
             state[0] = 1.0  # |00...0>
 
             for l in range(L):
-                state = layer(state, params[l], N, l+1, ent_gates)
+                state = layer(state, params[l], N, l+1, ent_gates, jumpOPs, adj)
 
             rho_state += th.outer(state, state.conj())
         rho_state /= n_sim_noise
@@ -172,19 +205,3 @@ def calc_variance(N, L, n_sim=100, n_sim_noise=100, fast_ent=True):
         obs.append(th.trace(rho_state @ H).real)
     
     return np.mean(obs), np.std(obs)
-
-
-if __name__ == "__main__":
-    N = 4
-    L = 10
-
-    state = th.zeros(2**N, dtype=th.complex128)
-    state[0] = 1.0  # |00...0>
-
-    params1 = np.arccos(np.ones((L, N)) - 2 * np.random.uniform(size=(L,N)))
-    params2 = np.random.uniform(0, 2*np.pi, size=(L, N))
-    params3 = np.random.uniform(0, 2*np.pi, size=(L, N))
-
-    params = np.stack((params1, params2, params3), axis=2)
-
-    ic(calc_variance(N, L, n_sim=10, n_sim_noise=10, fast_ent=True))
