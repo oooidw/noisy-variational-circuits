@@ -23,7 +23,6 @@ def X_rotation(theta):
 
 def global_rotation(angles,N):
     """Apply a global rotation to the state vector."""
-
     U = U3_rotation(angles[0,0], angles[0,1], angles[0,2])
 
     for i in range(1,N):
@@ -75,14 +74,6 @@ def crx_gates(N, theta=np.pi/20):
     return crx_gates
 
 
-def generate_ghz(N):
-    """Generate a GHZ state for N qubits."""
-    state = th.zeros(2**N, dtype=th.complex128)
-    state[0] = 1/np.sqrt(2)
-    state[-1] = 1/np.sqrt(2)
-    return state
-
-
 def generate_H(N):
     """Generate the Hamiltonian for the system."""
     h = 9/N
@@ -100,46 +91,26 @@ def generate_H(N):
     return h*scale*H
 
 
-def generate_ghz_dm(N):
-    """Generate a GHZ state for N qubits."""
-    ghz_state = generate_ghz(N)
-    return th.outer(ghz_state, ghz_state)
-
-
-def noisy_gate_adj(N, L, jumpOPs, gamma=0.01):
-    phi = th.normal(0, np.log(N)/(N * L), (N,1,1))
-
-    gates = th.matrix_exp(-1j * phi * jumpOPs)
-
-    res = th.eye(2**N, dtype=th.complex128)
-    for i in range(N):
-
-        res = res @ gates[i]
+def noisy_gate_adj(phi, jumpOPs, gamma=0.01):
+    res = th.matrix_exp(th.sum(-1j * phi * jumpOPs, axis=0))
 
     return res
 
 
-def noisy_gate_nadj(N, L, jumpOPs, gamma=0.01):
-    phi = th.normal(0, np.log(N)/(N * L), (N,1,1))
-
-    gates = th.matrix_exp(-1j * phi * jumpOPs + phi**2 * (jumpOPs @ jumpOPs - jumpOPs.transpose(2,1).conj() @ jumpOPs)/2)
-
-    res = th.eye(2**N, dtype=th.complex128)
-    for i in range(N):
-
-        res = res @ gates[i]
+def noisy_gate_nadj(phi, jumpOPs, gamma=0.01):
+    res = th.matrix_exp(th.sum(-1j * phi * jumpOPs + (phi**2 / 2) * (jumpOPs @ jumpOPs - jumpOPs.transpose(2, 1).conj() @ jumpOPs), axis=0))
 
     return res
 
 
-def noisy_gate(N, L, jumpOPs, adj, gamma=0.01):
+def noisy_gate(phi, jumpOPs, adj, gamma=0.01):
     if adj==True:
-        return noisy_gate_adj(N, L, jumpOPs, gamma)
+        return noisy_gate_adj(phi, jumpOPs, gamma)
     else:
-        return noisy_gate_nadj(N, L, jumpOPs, gamma)
+        return noisy_gate_nadj(phi, jumpOPs, gamma)
 
 
-def layer(state, angles, N, L, gates, jumpOPs, adj):
+def layer(state, angles, N, gates, phi, jumpOPs, adj):
     """Apply a layer of gates to the state vector."""
     U = global_rotation(angles,N)
     
@@ -151,7 +122,7 @@ def layer(state, angles, N, L, gates, jumpOPs, adj):
         state = gate @ state
 
     # Apply noisy gate
-    noise = noisy_gate(N, L, jumpOPs, adj)
+    noise = noisy_gate(phi, jumpOPs, adj)
     state = noise @ state
 
     return state
@@ -181,27 +152,27 @@ def calc_variance(N, L, n_sim=100, n_sim_noise=100, fast_ent=True, noise='dephas
         jumpOPs[i] = th.kron(th.eye(2**i, dtype=th.complex128), th.kron(jumpOP, th.eye(2**(N-i-1), dtype=th.complex128))) # Id x jumpOP x Id
 
 
-    obs = []
+    obs_hist = th.empty([n_sim*n_sim_noise, 3*L*N+N+1], dtype=th.float64)
 
-    for _ in range(n_sim):
-        params1 = np.arccos(np.ones((L, N)) - 2 * np.random.uniform(size=(L,N)))
-        params2 = np.random.uniform(0, 2*np.pi, size=(L, N))
-        params3 = np.random.uniform(0, 2*np.pi, size=(L, N))
+    for i in range(n_sim):
+        params1 = th.acos(th.ones((L, N)) - 2 * th.rand((L, N)))
+        params2 = 2 * np.pi * th.rand((L, N))
+        params3 = 2 * np.pi * th.rand((L, N))
+        params = th.stack([params1, params2, params3], dim=2)
+        
+        flat_params = th.cat([params1.flatten(), params2.flatten(), params3.flatten()])
 
-        params = np.stack((params1, params2, params3), axis=2)
+        for j in range(n_sim_noise):
+            phi = th.normal(0, np.log(N)/(N * L), (N,1,1))
 
-        rho_state = th.zeros(2**N, 2**N, dtype=th.complex128)
-        for _ in range(n_sim_noise):
             state = th.zeros(2**N, dtype=th.complex128)
             state[0] = 1.0  # |00...0>
 
             for l in range(L):
-                state = layer(state, params[l], N, l+1, ent_gates, jumpOPs, adj)
+                state = layer(state, params[l], N, ent_gates, phi, jumpOPs, adj)
 
-            rho_state += th.outer(state, state.conj())
-        rho_state /= n_sim_noise
-        
+            obs = th.vdot(state, H @ state).real # Expectation value should be real
 
-        obs.append(th.trace(rho_state @ H).real)
-    
-    return np.mean(obs), np.std(obs)
+            obs_hist[i * n_sim_noise + j, :] = th.cat([flat_params, phi.flatten(), obs.unsqueeze(0)])
+
+    return obs_hist
