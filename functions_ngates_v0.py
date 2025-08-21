@@ -1,7 +1,7 @@
 import numpy as np
 import torch as th
-from icecream import ic
 
+from icecream import ic
 
 
 def U3_rotation(theta,phi,lambda_):
