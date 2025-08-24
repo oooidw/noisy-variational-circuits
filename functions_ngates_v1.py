@@ -48,6 +48,30 @@ def crx_layer(N, theta, device='cpu'):
         crx_layer_op = crx_layer_op @ th.kron(Id1, th.kron(crx, Id2))
     return crx_layer_op
 
+def crx_layer_batch(N, thetas, device='cpu'):
+    """Return the operator for a layer of controlled RX gates."""
+    cos_t = th.cos((thetas / 2))
+    sin_t = th.sin((thetas / 2))
+
+    crx = th.zeros(N-1, 4, 4, dtype=th.complex128)
+
+    # Fill the diagonal elements
+    crx[:, 0, 0] = 1
+    crx[:, 1, 1] = 1
+    crx[:, 2, 2] = cos_t
+    crx[:, 3, 3] = cos_t
+    crx[:, 2, 3] = -1j * sin_t
+    crx[:, 3, 2] = -1j * sin_t
+
+    identities = [th.eye(2**i, dtype=th.complex128, device=device) for i in range(N)]
+    crx_layer_op = th.kron(identities[0], th.kron(crx[0], identities[N-2]))
+
+    for i in range(1, N-1):
+        Id1 = identities[i]
+        Id2 = identities[N-i-2]
+        crx_layer_op = crx_layer_op @ th.kron(Id1, th.kron(crx[i], Id2))
+    return crx_layer_op
+
 def generate_H(N, device='cpu'):
     """Generate the Hamiltonian for the system."""
     h = 9 / N
@@ -102,7 +126,7 @@ def noisy_gate_batch(phi_batch, jumpOPs, adj):
 def calc_variance_ng(N, L, noise, theta=1, device='cpu', n_sim=100, n_sim_noise=100):
     H = generate_H(N, device=device)
     n_noise = noise[0].shape[0]
-    obs_hist = th.empty([n_sim, n_sim_noise, 3 * L * N + n_noise + 1], dtype=th.float64, device=device)
+    obs_hist = th.empty([n_sim, n_sim_noise], dtype=th.float64, device=device)
 
     for i in range(n_sim):
         params1 = th.acos(1.0 - 2 * th.rand((L, N), device=device))
@@ -127,23 +151,22 @@ def calc_variance_ng(N, L, noise, theta=1, device='cpu', n_sim=100, n_sim_noise=
         # Calculate expectation <psi|H|psi> for the batch
         obs_batch = (state_batch.mH @ (H @ state_batch)).squeeze().real
         
-        obs_hist[i, :, :3*L*N] = flat_params
-        obs_hist[i, :, 3*L*N:-1] = phi_batch.squeeze()
-        obs_hist[i, :, -1] = obs_batch
+
+        obs_hist[i, :] = obs_batch
 
     return obs_hist
+
 
 def calc_variance_pure(N, L, theta=np.pi/20, device='cpu', n_sim=100):
     H = generate_H(N, device=device)
     ent_gate = crx_layer(N, theta, device=device)
-    obs_hist = th.empty([n_sim, 3 * L * N + 1], dtype=th.float64, device=device)
+    obs_hist = th.empty([n_sim], dtype=th.float64, device=device)
 
     for i in range(n_sim):
         params1 = th.acos(1.0 - 2 * th.rand((L, N), device=device))
         params2 = 2 * th.pi * th.rand((L, N), device=device)
         params3 = 2 * th.pi * th.rand((L, N), device=device)
         params = th.stack([params1, params2, params3], dim=2)
-        flat_params = th.cat([params1.flatten(), params2.flatten(), params3.flatten()])
         
         # State is a COLUMN vector
         state = th.zeros(2**N, 1, dtype=th.complex128, device=device)
@@ -158,7 +181,84 @@ def calc_variance_pure(N, L, theta=np.pi/20, device='cpu', n_sim=100):
         # Expectation <psi|H|psi>
         obs = (state.mH @ H @ state).squeeze().real
 
-        obs_hist[i, :3*L*N] = flat_params
-        obs_hist[i, -1] = obs
+        obs_hist[i] = obs
+
+    return obs_hist
+
+def build_crx_layer_operator_batch(N, phi_batch, device='cpu'):
+    """
+    Constructs a batch of CRX layer operators.
+    phi_batch has shape (batch_size, N-1).
+    Returns a tensor of shape (batch_size, 2**N, 2**N).
+    """
+    batch_size = phi_batch.shape[0]
+    operator_list = []
+    
+    # Pre-calculate identities to reuse
+    identities = [th.eye(2**i, dtype=th.complex128, device=device) for i in range(N + 1)]
+
+    # Loop over each set of phi angles in the batch
+    for i in range(batch_size):
+        phis = phi_batch[i] # Get the (N-1,) vector for this simulation
+        
+        # Build the full layer operator for this single simulation
+        # This logic is identical to the build_crx_layer_operator function
+        cos_t = th.cos(phis / 2)
+        sin_t = th.sin(phis / 2)
+        
+        crx_gates = th.zeros(N-1, 4, 4, dtype=th.complex128, device=device)
+        crx_gates[:, 0, 0] = 1
+        crx_gates[:, 1, 1] = 1
+        crx_gates[:, 2, 2] = cos_t
+        crx_gates[:, 3, 3] = cos_t
+        crx_gates[:, 2, 3] = -1j * sin_t
+        crx_gates[:, 3, 2] = -1j * sin_t
+        
+        full_op = th.kron(identities[0], th.kron(crx_gates[0], identities[N-2]))
+        
+        for j in range(1, N-1):
+            Id1 = identities[j]
+            Id2 = identities[N-j-2]
+            term = th.kron(Id1, th.kron(crx_gates[j], Id2))
+            full_op = full_op @ term
+            
+        operator_list.append(full_op)
+        
+    # Stack the list of operators into a single batch tensor
+    return th.stack(operator_list, dim=0)
+
+def calc_variance_ng_crx_batched(N, L, theta=np.pi/20, device='cpu', n_sim=100, n_sim_noise=100):
+    """
+    Fully batched version of calc_variance_ng_crx.
+    The inner loop over n_sim_noise is replaced with batched tensor operations.
+    """
+    H = generate_H(N, device=device)
+    obs_hist = th.empty([n_sim, n_sim_noise], dtype=th.float64, device=device)
+
+    for i in range(n_sim):
+        # --- 1. Parameter and State Initialization ---
+        params1 = th.acos(1.0 - 2 * th.rand((L, N), device=device))
+        params2 = 2 * th.pi * th.rand((L, N), device=device)
+        params3 = 2 * th.pi * th.rand((L, N), device=device)
+        params = th.stack([params1, params2, params3], dim=2)
+
+        # Sample a batch of noise parameters, one set for each simulation in the batch
+        phi_batch = th.normal(theta, np.log(N)/((N-1) * L), size=(n_sim_noise, N-1, L), device=device)
+        
+        # Create a batch of initial states |0...0> as COLUMN vectors
+        state_batch = th.zeros(n_sim_noise, 2**N, 1, dtype=th.complex128, device=device)
+        state_batch[:, 0, 0] = 1.0
+
+
+        for l in range(L):
+            U = global_rotation(params[l], N, device=device)
+            state_batch = U @ state_batch
+        
+            noise_operator_batch = build_crx_layer_operator_batch(N, phi_batch[:,:,l], device=device)
+            state_batch = th.bmm(noise_operator_batch, state_batch)
+
+        obs_batch = (state_batch.mH @ (H @ state_batch)).squeeze().real        
+
+        obs_hist[i, :] = obs_batch.real
 
     return obs_hist
