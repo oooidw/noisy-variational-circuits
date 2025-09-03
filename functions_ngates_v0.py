@@ -176,3 +176,37 @@ def calc_variance(N, L, n_sim=100, n_sim_noise=100, fast_ent=True, noise='dephas
             obs_hist[i * n_sim_noise + j, :] = th.cat([flat_params, phi.flatten(), obs.unsqueeze(0)])
 
     return obs_hist
+
+
+# --- Batched Noise Model Definitions (doesn't work in these functions) ---
+
+def get_jump_operators(N, noise_type='dephasing', device='cpu'):
+    """Pre-calculates and returns jump operators."""
+    if noise_type == 'dephasing':
+        jumpOP_local = th.tensor([[1, 0], [0, -1]], dtype=th.complex128, device=device)
+    elif noise_type == 'bitflip':
+        jumpOP_local = th.tensor([[0, 1], [1, 0]], dtype=th.complex128, device=device)
+    elif noise_type == 'amplitude_damping':
+        jumpOP_local = th.tensor([[0, 1], [0, 0]], dtype=th.complex128, device=device)
+    
+    jumpOPs = th.empty(N, 2**N, 2**N, dtype=th.complex128, device=device)
+    identities = [th.eye(2**i, dtype=th.complex128, device=device) for i in range(N + 1)]
+
+    for i in range(N):
+        Id1 = identities[i]
+        Id2 = identities[N - i - 1]
+        jumpOPs[i] = th.kron(Id1, th.kron(jumpOP_local, Id2))
+    return jumpOPs
+
+def noisy_gate_batch(phi_batch, jumpOPs, adj):
+    """Calculates a batch of noisy gates. Device is inferred from input tensors."""
+    jumpOPs = jumpOPs.unsqueeze(0)
+    
+    if adj:
+        exponent_arg = th.sum(-1j * phi_batch * jumpOPs, axis=1)
+    else:
+        JdagJ = jumpOPs.mH @ jumpOPs
+        JJ = jumpOPs @ jumpOPs
+        exponent_arg = th.sum(-1j * phi_batch * jumpOPs + (phi_batch**2 / 2) * (JJ - JdagJ), axis=1)
+        
+    return th.matrix_exp(exponent_arg)

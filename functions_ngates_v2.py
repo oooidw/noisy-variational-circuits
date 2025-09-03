@@ -29,25 +29,23 @@ def global_rotation(angles, N, device='cpu'):
         U = _kron_batched(U, U_i)
     return U
 
-def crx_layer(N, theta, device='cpu'):
-    """Return the operator for a layer of controlled RX gates."""
-    Id = th.eye(2, dtype=th.complex128, device=device)
-    cos_t = th.cos(th.tensor(theta / 2, device=device))
-    sin_t = th.sin(th.tensor(theta / 2, device=device))
-    Rx = th.tensor(
-        [[cos_t, -1j * sin_t],
-         [-1j * sin_t, cos_t]],
-        dtype=th.complex128, device=device) 
+def cnot_gates(N, device='cpu'):
+    """Return a n-1 cascading CNOT."""
+    cnot = th.tensor([
+                [1, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 0, 0, 1],
+                [0, 0, 1, 0]
+        ], dtype=th.complex128, device=device)
 
-    crx = th.block_diag(Id, Rx) 
-    
     Ids = [th.eye(2**i, dtype=th.complex128, device=device) for i in range(N)]
 
-    crx_layer_op = th.kron(crx, Ids[N-2])
-    
+    cnot_layer = th.kron(cnot, th.eye(2**(N-2), dtype=th.complex128, device=device))
+
     for i in range(1, N-1):
-        crx_layer_op = th.kron(Ids[i], th.kron(crx, Ids[N-i-2])) @ crx_layer_op
-    return crx_layer_op
+        cnot_layer = th.kron(Ids[i], th.kron(cnot, Ids[N-i-2])) @ cnot_layer
+
+    return cnot_layer
 
 def _kron_batched(A, B):
     """Calculate the tensor product in a batched way"""
@@ -63,38 +61,32 @@ def _kron_batched(A, B):
 
     return res
 
-def build_crx_layer_operator_batch(N, L, phi_batch, device='cpu'):
+def build_cnot_layer_operator_batch(N, L, phi, device='cpu'):
     """
-    Constructs a batch of CRX layer operators.
+    Constructs a batch of CNOT layer operators.
     phi_batch has shape (batch_size, N-1).
     Returns a tensor of shape (batch_size, 2**N, 2**N).
     """
-    batch_size = phi_batch.shape[0]
+    batch_size = phi.shape[0]
     
     # Pre-calculate identities to reuse
     identities = [th.eye(2**i, dtype=th.complex128, device=device).repeat(batch_size, L, 1, 1) for i in range(N + 1)]
 
-    # Build the full layer operator for this single simulation
-    # This logic is identical to the build_crx_layer_operator function
-    cos_t = th.cos(phi_batch / 2)
-    sin_t = th.sin(phi_batch / 2)
-    
-    crx_gates = th.zeros(batch_size, N-1, L, 4, 4, dtype=th.complex128, device=device)
-    crx_gates[:, :, :, 0, 0] = 1
-    crx_gates[:, :, :, 1, 1] = 1
-    crx_gates[:, :, :, 2, 2] = cos_t
-    crx_gates[:, :, :, 3, 3] = cos_t
-    crx_gates[:, :, :, 2, 3] = -1j * sin_t
-    crx_gates[:, :, :, 3, 2] = -1j * sin_t
+    cnot = th.zeros((batch_size, N-1, L, 4, 4), dtype=th.complex128, device=device)
+    cnot[:,:,:,0,0] = 1
+    cnot[:,:,:,1,1] = 1
+    cnot[:,:,:,2,2] = (1 + th.exp(1j * 4 * phi))/2
+    cnot[:,:,:,3,3] = (1 + th.exp(1j * 4 * phi))/2
+    cnot[:,:,:,2,3] = (1 - th.exp(1j * 4 * phi))/2
+    cnot[:,:,:,3,2] = (1 - th.exp(1j * 4 * phi))/2
+    cnot = -1 * cnot
 
-    crx_gates = -1 * crx_gates
-
-    full_ops = _kron_batched(identities[0], _kron_batched(crx_gates[:, 0], identities[N-2]))
+    full_ops = _kron_batched(identities[0], _kron_batched(cnot[:, 0], identities[N-2]))
     
     for j in range(1, N-1):
         Id1 = identities[j]
         Id2 = identities[N-j-2]
-        full_ops = _kron_batched(Id1, _kron_batched(crx_gates[:, j], Id2)) @ full_ops
+        full_ops = full_ops @ _kron_batched(Id1, _kron_batched(cnot[:, j], Id2))
 
     return full_ops
 
@@ -116,9 +108,9 @@ def generate_H(N, device='cpu'):
 
 # --- Main Simulation Functions ---
 
-def calc_variance_pure(N, L, theta=np.pi/20, device='cpu', n_sim=100):
+def calc_variance_pure(N, L, device='cpu', n_sim=100):
     H = generate_H(N, device=device)
-    ent_gate = crx_layer(N, theta, device=device)
+    ent_gate = cnot_gates(N, device=device)
     obs_hist = th.empty([n_sim], dtype=th.float64, device=device)
 
     for i in range(n_sim):
@@ -144,13 +136,14 @@ def calc_variance_pure(N, L, theta=np.pi/20, device='cpu', n_sim=100):
 
     return obs_hist
 
-def calc_variance_ng_crx_batched(N, L, theta=np.pi/20, device='cpu', n_sim=100, n_sim_noise=100):
+def calc_variance_ng_cnot_batched(N, L, theta=np.pi/4, device='cpu', n_sim=100, n_sim_noise=100):
     """
     Fully batched version of calc_variance_ng_crx.
     The inner loop over n_sim_noise is replaced with batched tensor operations.
     """
     H = generate_H(N, device=device)
     obs_hist = th.empty([n_sim, n_sim_noise], dtype=th.float64, device=device)
+    
 
     for i in range(n_sim):
         # --- 1. Parameter and State Initialization ---
@@ -161,8 +154,8 @@ def calc_variance_ng_crx_batched(N, L, theta=np.pi/20, device='cpu', n_sim=100, 
         U_gates = global_rotation(params, N, device=device)
 
         # Sample a batch of noise parameters, one set for each simulation in the batch
-        phi_batch = th.normal(0, np.sqrt(np.log(N)/((N-1)*L))*theta/2, size=(n_sim_noise, N-1, L), device=device)  
-        noise_gates = build_crx_layer_operator_batch(N, L, phi_batch, device=device)
+        phi_batch = th.normal(0, np.sqrt(np.log(N)/((N-1)*L)*2)*theta/2, size=(n_sim_noise, N-1, L), device=device)
+        noise_gates = build_cnot_layer_operator_batch(N, L, phi_batch, device=device)
 
         # Create a batch of initial states |0...0> as COLUMN vectors
         state_batch = th.zeros(n_sim_noise, 2**N, 1, dtype=th.complex128, device=device)
