@@ -1,0 +1,184 @@
+from pennylane import numpy as np
+import pennylane as qml
+from tqdm.notebook import tqdm
+
+
+def vqe_uccsd(H, qubits, hf_state, singles, doubles, opt, max_iterations=100, conv_tol=1e-06):
+    dev = qml.device("lightning.qubit", wires=qubits, shots=10)
+
+    s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
+
+    @qml.qnode(dev, interface="autograd")
+    def circuit(weights):
+        qml.UCCSD(weights, wires=range(qubits), s_wires=s_wires, d_wires=d_wires, init_state=hf_state)
+        return qml.expval(H)
+
+    # We can just use the circuit as the cost function
+    cost_fn = circuit
+    grad_fn = qml.grad(cost_fn)
+
+    num_weights = len(singles) + len(doubles)
+    weights = np.zeros(num_weights, requires_grad=True)
+
+    energy = [cost_fn(weights)]
+    grad_norms = []
+    grad_variances = []
+
+    for n in tqdm(range(max_iterations)):
+        # --- EFFICIENT OPTIMIZATION STEP ---
+        
+        # 1. Calculate the gradient ONLY ONCE
+        gradient = grad_fn(weights)
+        
+        # 2. Use the gradient to calculate metrics
+        flat_gradient = np.hstack([g.flatten() for g in gradient])
+        norm = np.linalg.norm(flat_gradient)
+        variance = np.var(flat_gradient)
+        grad_norms.append(norm)
+        grad_variances.append(variance)
+        
+        # 3. Use the SAME gradient to update the weights.
+        # This avoids the second, redundant gradient calculation.
+        weights = opt.apply_grad(gradient, weights)
+        
+        # 4. Store the previous energy and compute the new one
+        prev_energy = energy[-1]
+        current_energy = cost_fn(weights)
+        energy.append(current_energy)
+        
+        # ------------------------------------
+
+        conv = np.abs(current_energy - prev_energy)
+
+        if n % 10 == 0:
+            tqdm.write(
+                f"It={n}, E={energy[-1]:.8f} Ha, "
+                f"|∇E|={norm:.6f}, Var(∇E)={variance:.6f}"
+            )
+
+        if conv <= conv_tol:
+            print("\nConvergence achieved!")
+            break
+
+    return energy, weights, grad_norms, grad_variances
+
+
+def hardware_efficient_ansatz_1(params, wires):
+    num_layers = params.shape[0]
+    num_qubits = len(wires)
+
+    for layer in range(num_layers):
+        # Layer of rotation gates
+        for i in range(num_qubits):
+            qml.U3(params[layer, i, 0], params[layer, i, 1], params[layer, i, 2], wires=i)
+
+        # Layer of entangling gates
+        for i in range(num_qubits - 1):
+            qml.CNOT(wires=[i, i + 1])
+
+
+def vqe_hee(H, hf_state, qubits, L, opt, max_iterations=100, conv_tol=1e-06):
+    dev = qml.device("lightning.qubit", wires=qubits)
+
+    @qml.qnode(dev, interface="autograd")
+    def circuit(weights):
+        hardware_efficient_ansatz_1(weights, wires=range(qubits))
+        return qml.expval(H)
+
+    def cost_fn(param):
+        return circuit(param)
+
+    grad_fn = qml.grad(cost_fn)
+
+    params1 = np.arccos(1.0 - 2 * np.random.rand(L, qubits, requires_grad=True))
+    params2 = 2 * np.pi * np.random.rand(L, qubits, requires_grad=True)
+    params3 = 2 * np.pi * np.random.rand(L, qubits, requires_grad=True)
+    weights = np.stack([params1, params2, params3], axis=2)
+
+    # store the values of the cost function
+    energy = [cost_fn(weights)]
+    grad_norms = []
+    grad_variances = []
+
+    for n in tqdm(range(max_iterations)):
+        # --- METRIC CALCULATION ---
+        # 1. Calculate the gradient for the current weights
+        gradient = grad_fn(weights)
+        
+        # 2. Flatten the gradient into a 1D vector to compute stats
+        # The gradient has the same nested shape as 'weights', so we unravel it.
+        flat_gradient = np.hstack([g.flatten() for g in gradient])
+        
+        # 3. Compute and store the norm and variance
+        norm = np.linalg.norm(flat_gradient)
+        variance = np.var(flat_gradient)
+        grad_norms.append(norm)
+        grad_variances.append(variance)
+        # ---------------------------
+
+        # Optimizer step
+        weights, prev_energy = opt.step_and_cost(cost_fn, weights)
+        energy.append(cost_fn(weights))
+
+        conv = np.abs(energy[-1] - prev_energy)
+
+        if n % 10 == 0:
+            # Updated print statement to include the new metrics
+            tqdm.write(
+                f"It={n}, E={energy[-1]:.8f} Ha, "
+                f"|∇E|={norm:.6f}, Var(∇E)={variance:.6f}"
+            )
+
+        if conv <= conv_tol:
+            print("\nConvergence achieved!")
+            break
+
+    return energy, weights, grad_norms, grad_variances
+
+
+def hardware_efficient_ansatz_2(params, wires):
+    num_layers = params.shape[0]
+    num_qubits = len(wires)
+
+    for layer in range(num_layers):
+        # Layer of rotation gates
+        for i in range(num_qubits):
+            qml.U3(params[layer, i, 0], params[layer, i, 1], params[layer, i, 2], wires=i)
+
+        # Layer of entangling gates
+        for i in range(num_qubits - 1):
+            qml.CNOT(wires=[i, i + 1])
+
+
+def vqe_ng(H, qubits, L, opt, max_iterations=100, conv_tol=1e-06):
+    dev = qml.device("lightning.qubit", wires=qubits)
+
+    @qml.qnode(dev, interface="autograd")
+    def circuit(weights):
+        hardware_efficient_ansatz_2(weights, wires=range(qubits))
+        return qml.expval(H)
+
+    def cost_fn(param):
+        return circuit(param)
+
+    params1 = np.arccos(1.0 - 2 * np.random.rand(L, qubits, requires_grad=True))
+    params2 = 2 * np.pi * np.random.rand(L, qubits, requires_grad=True)
+    params3 = 2 * np.pi * np.random.rand(L, qubits, requires_grad=True)
+    weights = np.stack([params1, params2, params3], axis=2)
+
+    # store the values of the cost function
+    energy = [cost_fn(weights)]
+
+    for n in tqdm(range(max_iterations)):
+        weights, prev_energy = opt.step_and_cost(cost_fn, weights)
+        energy.append(cost_fn(weights))
+
+        conv = np.abs(energy[-1] - prev_energy)
+
+        if n % 10 == 0:
+            tqdm.write(f"Iteration = {n},  Energy = {energy[-1]:.8f} Ha")
+
+        if conv <= conv_tol:
+            break
+
+    return energy, weights
