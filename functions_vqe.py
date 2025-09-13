@@ -77,7 +77,7 @@ def hardware_efficient_ansatz_1(params, wires):
             qml.CNOT(wires=[i, i + 1])
 
 
-def vqe_hee(H, hf_state, qubits, L, opt, max_iterations=100, conv_tol=1e-06):
+def vqe_hee(H, qubits, L, opt, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
 
     @qml.qnode(dev, interface="autograd")
@@ -100,7 +100,7 @@ def vqe_hee(H, hf_state, qubits, L, opt, max_iterations=100, conv_tol=1e-06):
     grad_norms = []
     grad_variances = []
 
-    for n in tqdm(range(max_iterations)):
+    for n in tqdm(range(max_iterations), disable=not verbose):
         # --- METRIC CALCULATION ---
         # 1. Calculate the gradient for the current weights
         gradient = grad_fn(weights)
@@ -122,7 +122,7 @@ def vqe_hee(H, hf_state, qubits, L, opt, max_iterations=100, conv_tol=1e-06):
 
         conv = np.abs(energy[-1] - prev_energy)
 
-        if n % 10 == 0:
+        if n % 10 == 0 and verbose:
             # Updated print statement to include the new metrics
             tqdm.write(
                 f"It={n}, E={energy[-1]:.8f} Ha, "
