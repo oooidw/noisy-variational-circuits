@@ -24,7 +24,7 @@ class NG_CNOT(Operation):
 
 
 def vqe_uccsd(H, qubits, hf_state, singles, doubles, opt, max_iterations=100, conv_tol=1e-06):
-    dev = qml.device("lightning.qubit", wires=qubits, shots=10)
+    dev = qml.device("lightning.qubit", wires=qubits)
 
     s_wires, d_wires = qml.qchem.excitations_to_wires(singles, doubles)
 
@@ -167,7 +167,7 @@ def hardware_efficient_ansatz_2(params, phi, wires):
 
         # Layer of entangling gates
         for i in range(num_qubits - 1):
-            NG_CNOT(phi, wires=[i, i + 1])
+            NG_CNOT(phi[layer, i], wires=[i, i + 1])
 
 
 def vqe_ng(H, qubits, L, opt, max_iterations=100, conv_tol=1e-06, verbose=True):
@@ -190,7 +190,7 @@ def vqe_ng(H, qubits, L, opt, max_iterations=100, conv_tol=1e-06, verbose=True):
     params3 = 2 * np.pi * np.random.rand(L, qubits, requires_grad=True)
     weights = np.stack([params1, params2, params3], axis=2)
 
-    phi = np.random.normal(0, np.sqrt(np.log(N)/((N-1)*L))*(np.pi/4)/2, requires_grad=True)
+    phi = np.random.normal(0, np.sqrt(np.log(N)/((N-1)*L))*(np.pi/4)/2, size=(L, qubits-1), requires_grad=True)
 
     # store the values of the cost function
     energy = [cost_fn(weights)]
