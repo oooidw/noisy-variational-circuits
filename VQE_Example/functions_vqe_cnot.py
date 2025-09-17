@@ -1,6 +1,26 @@
 from pennylane import numpy as np
 import pennylane as qml
+from pennylane.operation import Operation
 from tqdm.notebook import tqdm
+
+
+class NG_CNOT(Operation):
+    """A custom gate built from a specific decomposition."""
+    num_params = 1
+    num_wires = 2
+    par_domain = 'R'
+
+    def decomposition(self):
+        """Returns the gate's decomposition into native PennyLane gates."""
+        phi = self.parameters[0]
+        control_wire = self.wires[0]
+        target_wire = self.wires[1]
+        
+        return [
+            qml.PhaseShift(2 * phi, wires=control_wire),
+            qml.CRX(4 * phi, wires=[control_wire, target_wire]),
+            qml.GlobalPhase(np.pi)
+        ]
 
 
 def vqe_uccsd(H, qubits, hf_state, singles, doubles, opt, max_iterations=100, conv_tol=1e-06):
@@ -99,6 +119,7 @@ def vqe_hee(H, qubits, L, opt, max_iterations=100, conv_tol=1e-06, verbose=True)
     energy = [cost_fn(weights)]
     grad_norms = []
     grad_variances = []
+    convergence = False
 
     for n in tqdm(range(max_iterations), disable=not verbose):
         # --- METRIC CALCULATION ---
@@ -130,13 +151,12 @@ def vqe_hee(H, qubits, L, opt, max_iterations=100, conv_tol=1e-06, verbose=True)
             )
 
         if conv <= conv_tol:
-            print("\nConvergence achieved!")
-            break
+            convergence = True
 
-    return energy, weights, grad_norms, grad_variances
+    return energy, grad_norms, grad_variances, convergence
 
 
-def hardware_efficient_ansatz_2(params, wires):
+def hardware_efficient_ansatz_2(params, phi, wires):
     num_layers = params.shape[0]
     num_qubits = len(wires)
 
@@ -147,38 +167,67 @@ def hardware_efficient_ansatz_2(params, wires):
 
         # Layer of entangling gates
         for i in range(num_qubits - 1):
-            qml.CNOT(wires=[i, i + 1])
+            NG_CNOT(phi, wires=[i, i + 1])
 
 
-def vqe_ng(H, qubits, L, opt, max_iterations=100, conv_tol=1e-06):
+def vqe_ng(H, qubits, L, opt, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
+
+    N = qubits
 
     @qml.qnode(dev, interface="autograd")
     def circuit(weights):
-        hardware_efficient_ansatz_2(weights, wires=range(qubits))
+        hardware_efficient_ansatz_2(weights, phi, wires=range(qubits))
         return qml.expval(H)
 
     def cost_fn(param):
         return circuit(param)
+    
+    grad_fn = qml.grad(cost_fn)
 
     params1 = np.arccos(1.0 - 2 * np.random.rand(L, qubits, requires_grad=True))
     params2 = 2 * np.pi * np.random.rand(L, qubits, requires_grad=True)
     params3 = 2 * np.pi * np.random.rand(L, qubits, requires_grad=True)
     weights = np.stack([params1, params2, params3], axis=2)
 
+    phi = np.random.normal(0, np.sqrt(np.log(N)/((N-1)*L))*(np.pi/4)/2, requires_grad=True)
+
     # store the values of the cost function
     energy = [cost_fn(weights)]
+    grad_norms = []
+    grad_variances = []
+    convergence = False
 
-    for n in tqdm(range(max_iterations)):
+    for n in tqdm(range(max_iterations), disable=not verbose):
+        # --- METRIC CALCULATION ---
+        # 1. Calculate the gradient for the current weights
+        gradient = grad_fn(weights)
+        
+        # 2. Flatten the gradient into a 1D vector to compute stats
+        # The gradient has the same nested shape as 'weights', so we unravel it.
+        flat_gradient = np.hstack([g.flatten() for g in gradient])
+        
+        # 3. Compute and store the norm and variance
+        norm = np.linalg.norm(flat_gradient)
+        variance = np.var(flat_gradient)
+        grad_norms.append(norm)
+        grad_variances.append(variance)
+        # ---------------------------
+
+        # Optimizer step
         weights, prev_energy = opt.step_and_cost(cost_fn, weights)
         energy.append(cost_fn(weights))
 
         conv = np.abs(energy[-1] - prev_energy)
 
-        if n % 10 == 0:
-            tqdm.write(f"Iteration = {n},  Energy = {energy[-1]:.8f} Ha")
+        if n % 10 == 0 and verbose:
+            # Updated print statement to include the new metrics
+            tqdm.write(
+                f"It={n}, E={energy[-1]:.8f} Ha, "
+                f"|∇E|={norm:.6f}, Var(∇E)={variance:.6f}"
+            )
 
         if conv <= conv_tol:
-            break
+            convergence = True
 
-    return energy, weights
+    return energy, grad_norms, grad_variances, convergence

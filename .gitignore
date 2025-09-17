@@ -1,4 +1,3 @@
-result1_6q_cnot.pt
-result2_6q_cnot.pt
+local_data/*
 datasets/*
 __pycache__/*
