@@ -7,22 +7,28 @@ from tqdm.notebook import tqdm
 
 
 
-class NG_CNOT(Operation):
-    """A custom gate built from a specific decomposition."""
+class NG_CRX(Operation):
+    """A custom Controlled-RX gate, decomposed into RY and CNOT gates."""
+    
     num_params = 1
     num_wires = 2
     par_domain = 'R'
 
     def decomposition(self):
-        """Returns the gate's decomposition into native PennyLane gates."""
-        phi = self.parameters[0]
+        """
+        Returns the gate's decomposition into a sequence of
+        native PennyLane gates.
+        """
+        
+        theta = self.parameters[0]
         control_wire = self.wires[0]
         target_wire = self.wires[1]
         
         return [
-            qml.PhaseShift(2 * phi, wires=control_wire),
-            qml.CRX(4 * phi, wires=[control_wire, target_wire]),
-            qml.GlobalPhase(np.pi)
+            qml.RY(theta / 2, wires=target_wire),
+            qml.CNOT(wires=[control_wire, target_wire]),
+            qml.RY(-theta / 2, wires=target_wire),
+            qml.CNOT(wires=[control_wire, target_wire])
         ]
 
 
@@ -86,26 +92,26 @@ def vqe_uccsd(H, qubits, hf_state, singles, doubles, opt, max_iterations=100, co
     return energy, weights, grad_norms, grad_variances
 
 
-def hardware_efficient_ansatz_1(params, wires):
+def hardware_efficient_ansatz_1(params, theta, wires):
     num_layers = params.shape[0]
     num_qubits = len(wires)
 
-    for layer in range(num_layers):
+    for layer in range(num_layers, theta):
         # Layer of rotation gates
         for i in range(num_qubits):
             qml.U3(params[layer, i, 0], params[layer, i, 1], params[layer, i, 2], wires=i)
 
         # Layer of entangling gates
         for i in range(num_qubits - 1):
-            qml.CNOT(wires=[i, i + 1])
+            qml.CRX(theta, wires=[i, i + 1])
 
 
-def vqe_hee(H, qubits, L, opt, max_iterations=100, conv_tol=1e-06, verbose=True):
+def vqe_hee(H, qubits, L, opt, theta=np.pi/5, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
 
     @qml.qnode(dev, interface="autograd")
     def circuit(weights):
-        hardware_efficient_ansatz_1(weights, wires=range(qubits))
+        hardware_efficient_ansatz_1(weights, theta, wires=range(qubits))
         return qml.expval(H)
 
     def cost_fn(param):
@@ -170,7 +176,7 @@ def hardware_efficient_ansatz_2(params, phi, wires):
 
         # Layer of entangling gates
         for i in range(num_qubits - 1):
-            NG_CNOT(phi[layer, i], wires=[i, i + 1])
+            NG_CRX(phi[layer, i], wires=[i, i + 1])
 
 
 def vqe_ng(H, qubits, L, weights_lr=0.01, phi_lr=0.1, max_iterations=100, conv_tol=1e-06, verbose=True):
