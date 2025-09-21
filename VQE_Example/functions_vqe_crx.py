@@ -96,7 +96,11 @@ def hardware_efficient_ansatz_1(params, theta, wires):
     num_layers = params.shape[0]
     num_qubits = len(wires)
 
+<<<<<<< HEAD
     for layer in range(num_layers, theta):
+=======
+    for layer in range(num_layers):
+>>>>>>> 9b3c80a (Updates)
         # Layer of rotation gates
         for i in range(num_qubits):
             qml.U3(params[layer, i, 0], params[layer, i, 1], params[layer, i, 2], wires=i)
@@ -179,7 +183,11 @@ def hardware_efficient_ansatz_2(params, phi, wires):
             NG_CRX(phi[layer, i], wires=[i, i + 1])
 
 
+<<<<<<< HEAD
 def vqe_ng(H, qubits, L, weights_lr=0.01, phi_lr=0.1, max_iterations=100, conv_tol=1e-06, verbose=True):
+=======
+def vqe_ng(H, qubits, L, weights_lr=0.1, phi_lr=0.01, max_iterations=100, conv_tol=1e-06, verbose=True):
+>>>>>>> 9b3c80a (Updates)
     dev = qml.device("lightning.qubit", wires=qubits)
     N = qubits
 
