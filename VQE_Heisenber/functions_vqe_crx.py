@@ -7,25 +7,6 @@ from tqdm.notebook import tqdm
 
 
 
-class NG_CNOT(Operation):  ### NOT CORRECT
-    """A custom gate built from a specific decomposition."""
-    num_params = 1
-    num_wires = 2
-    par_domain = 'R'
-
-    def decomposition(self):
-        """Returns the gate's decomposition into native PennyLane gates."""
-        phi = self.parameters[0]
-        control_wire = self.wires[0]
-        target_wire = self.wires[1]
-        
-        return [
-            qml.PhaseShift(2 * phi, wires=control_wire),
-            qml.CRX(4 * phi, wires=[control_wire, target_wire]),
-            qml.GlobalPhase(np.pi)
-        ]
-
-
 def vqe_uccsd(H, qubits, hf_state, singles, doubles, opt, max_iterations=100, conv_tol=1e-06):
     dev = qml.device("lightning.qubit", wires=qubits)
 
@@ -86,7 +67,7 @@ def vqe_uccsd(H, qubits, hf_state, singles, doubles, opt, max_iterations=100, co
     return energy, weights, grad_norms, grad_variances
 
 
-def hardware_efficient_ansatz_1(params, wires):
+def hardware_efficient_ansatz_1(params, theta, wires):
     num_layers = params.shape[0]
     num_qubits = len(wires)
 
@@ -96,90 +77,59 @@ def hardware_efficient_ansatz_1(params, wires):
             qml.U3(params[layer, i, 0], params[layer, i, 1], params[layer, i, 2], wires=i)
 
         # Layer of entangling gates
-        for i in range(num_qubits):
-            qml.CNOT(wires=[i, (i + 1) % num_qubits])
+        for i in range(num_qubits - 1):
+            qml.CRX(theta, wires=[i, i + 1])
 
 
-def vqe_hee(H, qubits, L, lr=0.1, max_iterations=100, conv_tol=1e-06, verbose=True):
+def vqe_hee(H, qubits, L, lr, theta=np.pi/5, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
+    opt = qml.GradientDescentOptimizer(stepsize=lr)
 
-    @qml.qnode(dev, interface="torch")
-    def circuit(params1, params2, params3):  # Accept separate parameters
-        # Stack parameters inside the circuit
-        weights = torch.stack([params1, params2, params3], dim=2)
-        hardware_efficient_ansatz_1(weights, wires=range(qubits))
+    @qml.qnode(dev, interface="autograd")
+    def circuit(weights):
+        hardware_efficient_ansatz_1(weights, theta, wires=range(qubits))
         return qml.expval(H)
 
-    def cost_fn(params1, params2, params3):
-        return circuit(params1, params2, params3)
+    def cost_fn(param):
+        return circuit(param)
 
-    # Initialize individual parameter tensors as leaf tensors
-    params1 = torch.tensor(
-        np.arccos(1.0 - 2 * np.random.rand(L, qubits)), 
-        requires_grad=True, 
-        dtype=torch.float64
-    )
-    params2 = torch.tensor(
-        2 * np.pi * np.random.rand(L, qubits), 
-        requires_grad=True, 
-        dtype=torch.float64
-    )
-    params3 = torch.tensor(
-        2 * np.pi * np.random.rand(L, qubits), 
-        requires_grad=True, 
-        dtype=torch.float64
-    )
+    grad_fn = qml.grad(cost_fn)
 
-    # Create PyTorch optimizer with different learning rates for parameter groups
-    optimizer = optim.Adam([
-        {'params': [params1, params2, params3], 'lr': lr}
-    ])
+    params1 = np.arccos(1.0 - 2 * np.random.rand(L, qubits, requires_grad=True))
+    params2 = 2 * np.pi * np.random.rand(L, qubits, requires_grad=True)
+    params3 = 2 * np.pi * np.random.rand(L, qubits, requires_grad=True)
+    weights = np.stack([params1, params2, params3], axis=2)
 
-    # Store the values of the cost function
-    energy = [cost_fn(params1, params2, params3).item()]
+    # store the values of the cost function
+    energy = [cost_fn(weights)]
     grad_norms = []
     grad_variances = []
     convergence = False
 
     for n in tqdm(range(max_iterations), disable=not verbose):
-        # Zero gradients
-        optimizer.zero_grad()
-        
-        # Forward pass
-        current_energy = cost_fn(params1, params2, params3)
-        
-        # Backward pass
-        current_energy.backward()
-        
         # --- METRIC CALCULATION ---
-        # Collect gradients from all parameter tensors
-        all_grads = []
-        for param in [params1, params2, params3]:
-            if param.grad is not None:
-                all_grads.append(param.grad.flatten())
+        # 1. Calculate the gradient for the current weights
+        gradient = grad_fn(weights)
         
-        # Concatenate all gradients
-        if all_grads:
-            flat_gradient = torch.cat(all_grads).detach().numpy()
-            norm = np.linalg.norm(flat_gradient)
-            variance = np.var(flat_gradient)
-            grad_norms.append(norm)
-            grad_variances.append(variance)
+        # 2. Flatten the gradient into a 1D vector to compute stats
+        # The gradient has the same nested shape as 'weights', so we unravel it.
+        flat_gradient = np.hstack([g.flatten() for g in gradient])
+        
+        # 3. Compute and store the norm and variance
+        norm = np.linalg.norm(flat_gradient)
+        variance = np.var(flat_gradient)
+        grad_norms.append(norm)
+        grad_variances.append(variance)
         # ---------------------------
 
-        # Store previous energy for convergence check
-        prev_energy = energy[-1]
-        
         # Optimizer step
-        optimizer.step()
-        
-        # Store current energy
-        energy.append(current_energy.item())
-        
-        # Check convergence
+        weights, prev_energy = opt.step_and_cost(cost_fn, weights)
+        energy.append(cost_fn(weights))
+
         conv = np.abs(energy[-1] - prev_energy)
-        
+
         if n % 10 == 0 and verbose:
+            # Updated print statement to include the new metrics
             tqdm.write(
                 f"It={n}, E={energy[-1]:.8f} Ha, "
                 f"|∇E|={norm:.6f}, Var(∇E)={variance:.6f}"
@@ -201,11 +151,11 @@ def hardware_efficient_ansatz_2(params, phi, wires):
             qml.U3(params[layer, i, 0], params[layer, i, 1], params[layer, i, 2], wires=i)
 
         # Layer of entangling gates
-        for i in range(num_qubits):
-            NG_CNOT(phi[layer, i], wires=[i, (i + 1) % num_qubits])
+        for i in range(num_qubits - 1):
+            qml.CRX(phi[layer, i], wires=[i, i + 1])
 
 
-def vqe_ng(H, qubits, L, weights_lr=0.01, phi_lr=0.1, max_iterations=100, conv_tol=1e-06, verbose=True):
+def vqe_ng(H, qubits, L, weights_lr=0.1, phi_lr=0.01, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
     N = qubits
 
@@ -237,7 +187,7 @@ def vqe_ng(H, qubits, L, weights_lr=0.01, phi_lr=0.1, max_iterations=100, conv_t
     )
     
     phi = torch.tensor(
-        np.random.normal(0, np.sqrt(np.log(N)/((N-1)*L))*(np.pi/4)/2, size=(L, qubits)), 
+        np.random.normal(0, np.sqrt(np.log(N)/((N-1)*L))*(np.pi/4)/2, size=(L, qubits-1)), 
         requires_grad=True, 
         dtype=torch.float64
     )
