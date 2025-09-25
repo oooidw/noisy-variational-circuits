@@ -24,7 +24,7 @@ def hardware_efficient_ansatz_1(params, theta, wires):
             qml.CRX(theta, wires=[i, (i + 1) % num_qubits])
 
 
-def vqe_hee(H, qubits, L, lr, theta=np.pi, max_iterations=100, conv_tol=1e-06, verbose=True):
+def vqe_hee_old(H, qubits, L, lr, theta=np.pi, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
     opt = qml.AdamOptimizer(stepsize=lr)
 
@@ -84,7 +84,7 @@ def vqe_hee(H, qubits, L, lr, theta=np.pi, max_iterations=100, conv_tol=1e-06, v
     return energy, grad_norms, grad_variances, convergence
 
 
-def vqe_hee_th(H, qubits, L, lr, theta=np.pi/5, max_iterations=100, conv_tol=1e-06, verbose=True):
+def vqe_hee(H, qubits, L, lr, theta=np.pi/5, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
     N = qubits
 
@@ -208,7 +208,7 @@ def vqe_ng(H, qubits, L, weights_lr=0.1, phi_lr=0.01, max_iterations=100, conv_t
         return circuit(params1, params2, params3, phi)
 
     # Initialize individual parameter tensors as leaf tensors
-    params1 = torch.tensor(np.arccos(1.0 - 2 * np.random.rand(L, qubits)), dtype=torch.float64)
+    params1 = torch.tensor(np.arccos(1.0 - 2 * np.random.rand(L, qubits)), requires_grad=True, dtype=torch.float64)
     params2 = torch.tensor(2 * np.pi * np.random.rand(L, qubits), requires_grad=True, dtype=torch.float64)
     params3 = torch.tensor(2 * np.pi * np.random.rand(L, qubits), requires_grad=True, dtype=torch.float64)
 
