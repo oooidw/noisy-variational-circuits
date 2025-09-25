@@ -23,7 +23,7 @@ def hardware_efficient_ansatz_1(params, theta, wires):
 
 def vqe_hee(H, qubits, L, lr, theta=np.pi/5, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
-    opt = qml.GradientDescentOptimizer(stepsize=lr)
+    opt = qml.AdamOptimizer(stepsize=lr)
 
     @qml.qnode(dev, interface="autograd")
     def circuit(weights):
@@ -81,7 +81,7 @@ def vqe_hee(H, qubits, L, lr, theta=np.pi/5, max_iterations=100, conv_tol=1e-06,
     return energy, grad_norms, grad_variances, convergence
 
 
-def vqe_hee_th(H, qubits, L, lr=0.1, max_iterations=100, conv_tol=1e-06, verbose=True):
+def vqe_hee_th(H, qubits, L, lr, theta=np.pi/5, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
     N = qubits
 
@@ -89,7 +89,7 @@ def vqe_hee_th(H, qubits, L, lr=0.1, max_iterations=100, conv_tol=1e-06, verbose
     def circuit(params1, params2, params3):  # Accept separate parameters
         # Stack parameters inside the circuit
         weights = torch.stack([params1, params2, params3], dim=2)
-        hardware_efficient_ansatz_2(weights, wires=range(qubits))
+        hardware_efficient_ansatz_1(weights, theta, wires=range(qubits))
         return qml.expval(H)
 
     def cost_fn(params1, params2, params3):
