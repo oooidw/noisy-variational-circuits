@@ -187,7 +187,7 @@ def hardware_efficient_ansatz_2(params, phi, wires):
             qml.CRX(phi[layer, i], wires=[i, i + 1])
 
 
-def vqe_ng(H, qubits, L, weights_lr=0.1, phi_lr=0.01, max_iterations=100, conv_tol=1e-06, verbose=True):
+def vqe_ng(H, qubits, L, theta=np.pi/4, weights_lr=0.1, phi_lr=0.01, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
     N = qubits
 
@@ -219,7 +219,7 @@ def vqe_ng(H, qubits, L, weights_lr=0.1, phi_lr=0.01, max_iterations=100, conv_t
     )
     
     phi = torch.tensor(
-        np.random.normal(0, np.sqrt(np.log(N)/((N-1)*L))*(np.pi/4)/2, size=(L, qubits-1)), 
+        np.random.normal(0, np.sqrt(np.log(N)/((N-1)*L))*(theta)/2, size=(L, qubits-1)), 
         requires_grad=True, 
         dtype=torch.float64
     )

@@ -193,7 +193,7 @@ def hardware_efficient_ansatz_2(params, phi, wires):
             qml.CRX(phi[layer, i], wires=[i, (i + 1) % num_qubits])
 
 
-def vqe_ng(H, qubits, L, weights_lr=0.1, phi_lr=0.01, max_iterations=100, conv_tol=1e-06, verbose=True):
+def vqe_ng(H, qubits, L, theta=np.pi/4, weights_lr=0.1, phi_lr=0.01, max_iterations=100, conv_tol=1e-06, verbose=True):
     dev = qml.device("lightning.qubit", wires=qubits)
     N = qubits
 
@@ -212,7 +212,7 @@ def vqe_ng(H, qubits, L, weights_lr=0.1, phi_lr=0.01, max_iterations=100, conv_t
     params2 = torch.tensor(2 * np.pi * np.random.rand(L, qubits), requires_grad=True, dtype=torch.float64)
     params3 = torch.tensor(2 * np.pi * np.random.rand(L, qubits), requires_grad=True, dtype=torch.float64)
 
-    phi = torch.tensor(np.random.normal(0, np.sqrt(np.log(N)/((N)*L))*(np.pi/4)/2, size=(L, qubits)), requires_grad=True, dtype=torch.float64)
+    phi = torch.tensor(np.random.normal(0, np.sqrt(np.log(N)/(N*L))*(theta), size=(L, qubits)), requires_grad=True, dtype=torch.float64)
 
     # Create PyTorch optimizer with different learning rates for parameter groups
     optimizer = optim.Adam([
