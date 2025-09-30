@@ -56,7 +56,7 @@ def vqe_hee(H, qubits, L, lr, theta=np.pi/5, max_iterations=100, conv_tol=1e-06,
     )
 
     # Create PyTorch optimizer with different learning rates for parameter groups
-    optimizer = optim.Adam([
+    optimizer = optim.SGD([
         {'params': [params1, params2, params3], 'lr': lr}
     ])
 
@@ -155,7 +155,7 @@ def vqe_ng(H, qubits, L, theta=np.pi/4, weights_lr=0.1, phi_lr=0.01, max_iterati
     phi = torch.tensor(np.random.normal(0, np.sqrt(np.log(N)/(N*L))*(theta), size=(L, 2)), requires_grad=True, dtype=torch.float64)
 
     # Create PyTorch optimizer with different learning rates for parameter groups
-    optimizer = optim.Adam([
+    optimizer = optim.SGD([
         {'params': [params1, params2, params3], 'lr': weights_lr},  # Weight parameters
         {'params': [phi], 'lr': phi_lr}                           # Phi parameters
     ])
